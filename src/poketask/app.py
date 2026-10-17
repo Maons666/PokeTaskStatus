@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageTk
 from .core import Session, QuotaWindow
 from .monitor import Monitor
 from .paths import assets_dir, data_dir
+from .petpacks import discover_pack_summaries, import_pack, load_pack
 from .visuals import (PixelArt, STATES, INK, PAPER, MINT, GREEN, RED, GOLD,
                       PET_WIDTH, PET_HEIGHT, TRANSPARENT_KEY, panel_box, number)
 
@@ -56,7 +57,8 @@ class App:
         self.args = args
         self.root = tk.Tk()
         self.root.withdraw()
-        self.root.title("PokeTask · 巨金怪图鉴")
+        self.root.title("PokeTask · 图鉴")
+        self.root.overrideredirect(True)
         self.root.resizable(False, False)
         self.root.configure(bg=INK)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_panel)
@@ -71,7 +73,9 @@ class App:
                                 highlightthickness=0, bg=INK)
         self.canvas.pack()
         self.surface = self.canvas.create_image(0,0,anchor="nw")
-        self.canvas.bind("<Button-1>", self.click)
+        self.canvas.bind("<Button-1>", self.panel_press)
+        self.canvas.bind("<B1-Motion>", self.panel_move)
+        self.canvas.bind("<ButtonRelease-1>", self.panel_release)
         self.canvas.bind("<MouseWheel>", self.scroll)
         self.root.bind("<Tab>", self.focus_next)
         self.root.bind("<Return>", self.activate_focused)
@@ -79,6 +83,7 @@ class App:
         self.buttons = []
         self.focused = -1
         self.page = "status"
+        self.panel_drag = None
         self.offset = 0
         self.sessions = []
         self.selected = str(self.config.get("selected", ""))
@@ -93,13 +98,31 @@ class App:
         self.visual_started = self.started
         self.notice = ""
         self.notice_until = 0
+        self.pack_store=self.store/"pets"
+        self.pack_results=queue.Queue()
+        self.pack_busy=False
+        self.box_error=""
+        self.box_offset=0
+        self.active_pack=None
+        self.preview_pack=None
+        self.selected_pet=str(self.config.get("selected_pet","builtin-metagross"))
+        self.box_candidate=self.selected_pet
+        self.refresh_pets()
+        if self.selected_pet!="builtin-metagross":
+            try:
+                entry=next(p for p in self.catalog if p["id"]==self.selected_pet)
+                self.active_pack=load_pack(entry["directory"])
+                self.preview_pack=self.active_pack
+            except (StopIteration,OSError,ValueError) as exc:
+                self.selected_pet=self.box_candidate="builtin-metagross"
+                self.box_error="形象包不可用，已恢复巨金怪"
         self.bridge_health=(False,False)
         self.bridge_health_at=0
         self.panel_visible = False
         self.sound = self.config.get("sound", True) is not False
         self.topmost = self.config.get("topmost", True) is not False
         self.pet = tk.Toplevel(self.root)
-        self.pet.title("PokeTask · 巨金怪")
+        self.pet.title("PokeTask · 桌宠")
         self.pet.overrideredirect(True)
         self.pet.configure(bg=TRANSPARENT_KEY)
         self.pet.attributes("-topmost", self.topmost)
@@ -120,7 +143,9 @@ class App:
         x = self.config_int("pet_x",sw-(PET_WIDTH+20)*self.scale,0,sw)
         y = self.config_int("pet_y",sh-(PET_HEIGHT+18)*self.scale-48,0,sh)
         self.pet.geometry(f"+{max(0,min(sw-PET_WIDTH*self.scale,x))}+{max(0,min(sh-PET_HEIGHT*self.scale-40,y))}")
-        self.root.geometry(f"+{max(0,(sw-self.W*self.scale)//2)}+{max(0,(sh-self.H*self.scale)//2-30)}")
+        px=self.config_int("panel_x",max(0,(sw-self.W*self.scale)//2),0,sw)
+        py=self.config_int("panel_y",max(0,(sh-self.H*self.scale)//2-30),0,sh)
+        self.root.geometry(f"+{min(px,max(0,sw-self.W*self.scale))}+{min(py,max(0,sh-self.H*self.scale))}")
         self.worker = threading.Thread(target=self.watch,daemon=True,name="local-log-observer")
         self.worker.start()
         if args.demo or args.smoke_test or not self.config.get("has_started"):
@@ -144,6 +169,7 @@ class App:
 
     def save(self):
         self.config.update(sound=self.sound,topmost=self.topmost,selected=self.selected,
+                           selected_pet=self.selected_pet,panel_x=self.root.winfo_x(),panel_y=self.root.winfo_y(),
                            has_started=True,pet_x=self.pet.winfo_x(),pet_y=self.pet.winfo_y())
         try:
             self.store.mkdir(parents=True,exist_ok=True)
@@ -175,14 +201,28 @@ class App:
 
     def current(self):
         if self.demo:
-            return Session("demo", "codex", "VS Code", "演示训练场",state=self.preview_state,
+            return Session("demo", "codex", "VS Code", "演示会话",state=self.preview_state,
                 updated_at=time.time(),input_tokens=18920,output_tokens=2840,cached_tokens=12200,
                 total_tokens=21760,context_percent=23.0,
                 quota=[QuotaWindow("5 小时",32,time.time()+7200),QuotaWindow("每周",18,time.time()+86400)],
-                detail="演示数据 · 不代表真实 agent 状态")
+                detail="")
         return next((s for s in self.sessions if self.key(s)==self.selected),None)
 
     def tick(self):
+        try:
+            while True:
+                callback,value,error=self.pack_results.get_nowait()
+                self.pack_busy=False
+                if error:
+                    self.box_error=error
+                    self.toast(error)
+                    self.show_panel()
+                    messagebox.showerror("形象包未完成",error,parent=self.root)
+                else:
+                    self.box_error=""
+                    callback(value)
+        except queue.Empty:
+            pass
         signal=self.store/"show-panel.signal"
         if signal.exists():
             try:
@@ -197,7 +237,7 @@ class App:
                     self.selected=self.key(sessions[0])
                 if self.gate.update(sessions,self.selected) and self.sound and not self.demo:
                     self.play_sound()
-                    self.toast("巨金怪：当前 agent 本轮已完成")
+                    self.toast("本轮完成")
                 self.sessions=sessions
         except queue.Empty:
             pass
@@ -253,11 +293,126 @@ class App:
             d.rectangle((x+3,y+3,x+w-3,y+h-3),outline=RED)
 
     def animation_time(self,state):
-        key=("demo" if self.demo else self.selected,state)
+        key=(self.selected_pet,"demo" if self.demo else self.selected,state)
         if key!=self.visual_key:
             self.visual_key=key
             self.visual_started=time.monotonic()
         return time.monotonic()-self.visual_started
+
+    @property
+    def move_name(self):
+        return self.active_pack.signature_move if self.active_pack else "彗星拳"
+
+    def refresh_pets(self):
+        packs,errors=discover_pack_summaries(self.pack_store)
+        self.catalog=[{"id":"builtin-metagross","name":"巨金怪","species_id":376,
+                       "signature_move":"彗星拳","directory":None}]+packs
+        if errors:
+            self.box_error=f"{len(errors)} 个形象包不可用"
+
+    def draw_creature(self,image,box,state,seconds,**options):
+        if self.active_pack:
+            self.art.pack_scene(image,box,self.active_pack,state,seconds,**options)
+        else:
+            self.art.scene(image,box,state,seconds,**options)
+
+    def pack_task(self,work,done):
+        if self.pack_busy:
+            return
+        self.pack_busy=True
+        def run():
+            try:
+                result=work()
+            except Exception as exc:
+                self.pack_results.put((done,None,str(exc) or "形象包处理失败"))
+            else:
+                self.pack_results.put((done,result,None))
+        # Let atomic import/export cleanup finish even when the UI is closed.
+        threading.Thread(target=run,daemon=False,name="pet-pack-worker").start()
+
+    def choose_pet(self,entry):
+        if self.pack_busy:
+            return
+        def chosen(pack):
+            self.box_candidate=entry["id"]
+            self.preview_pack=pack
+            self.box_error=""
+        if entry["id"]=="builtin-metagross":
+            chosen(None)
+        elif entry["id"]==self.selected_pet:
+            chosen(self.active_pack)
+        else:
+            self.pack_task(lambda:load_pack(entry["directory"]),chosen)
+
+    def use_pet(self):
+        if self.pack_busy or self.box_candidate==self.selected_pet:
+            return
+        self.selected_pet=self.box_candidate
+        self.active_pack=self.preview_pack
+        self.visual_key=None
+        self.save()
+        self.toast("已使用 "+(self.active_pack.name if self.active_pack else "巨金怪"))
+
+    def import_pet(self):
+        if self.pack_busy:
+            return
+        path=filedialog.askopenfilename(title="导入宝可梦形象包",parent=self.root,
+                                       filetypes=[("宝可梦形象包","*.zip")])
+        if not path:
+            return
+        def imported(pack):
+            self.refresh_pets()
+            self.box_candidate=pack.id
+            self.preview_pack=pack
+            index=next(i for i,p in enumerate(self.catalog) if p["id"]==pack.id)
+            self.box_offset=index//4*4
+            self.toast("已导入 "+pack.name)
+        self.pack_task(lambda:import_pack(Path(path),self.pack_store),imported)
+
+    def export_pet(self):
+        if self.pack_busy:
+            return
+        path=filedialog.asksaveasfilename(title="导出巨金怪示例包",parent=self.root,
+            initialfile="metagross.pokepet.zip",defaultextension=".zip",
+            filetypes=[("宝可梦形象包","*.zip")])
+        if path:
+            from .packexport import export_builtin_pack
+            self.pack_task(lambda:export_builtin_pack(Path(path)),lambda _:self.toast("示例包已导出"))
+
+    def shift_box(self,delta):
+        last=max(0,(len(self.catalog)-1)//4*4)
+        self.box_offset=max(0,min(last,self.box_offset+delta))
+
+    def draw_box(self,im):
+        for i,entry in enumerate(self.catalog[self.box_offset:self.box_offset+4]):
+            x,y=12+i%2*152,124+i//2*56
+            box=(x,y,144,48)
+            panel_box(im,box,MINT if entry["id"]==self.selected_pet else PAPER,
+                      GOLD if entry["id"]==self.box_candidate else INK)
+            self.art.item(im,"poke-ball",x+3,y+6)
+            self.art.text(im,(x+32,y+7),self.art.fit(entry["name"],105))
+            caption="使用中" if entry["id"]==self.selected_pet else entry["signature_move"]
+            self.art.text(im,(x+32,y+27),self.art.fit(caption,105),GREEN)
+            self.buttons.append((box,lambda p=entry:self.choose_pet(p)))
+            if self.focused==len(self.buttons)-1:
+                ImageDraw.Draw(im).rectangle((x+3,y+3,x+141,y+45),outline=RED)
+        self.button(im,(12,236,62,18),"上一页",lambda:self.shift_box(-4))
+        self.art.text(im,(132,238),f"{self.box_offset//4+1} / {(len(self.catalog)+3)//4}")
+        self.button(im,(246,236,62,18),"下一页",lambda:self.shift_box(4))
+        entry=next((p for p in self.catalog if p["id"]==self.box_candidate),self.catalog[0])
+        panel_box(im,(12,264,296,68))
+        portrait=self.preview_pack.portrait if self.preview_pack else self.art.frames["metagross"][0]
+        portrait=portrait.crop(portrait.getbbox())
+        factor=min(1,88/portrait.width,56/portrait.height)
+        portrait=portrait.resize((max(1,int(portrait.width*factor)),max(1,int(portrait.height*factor))),Image.Resampling.NEAREST)
+        im.alpha_composite(portrait,(60-portrait.width//2,299-portrait.height//2))
+        self.art.text(im,(112,272),self.art.fit(entry["name"],184))
+        self.art.text(im,(112,292),self.art.fit("招式 · "+entry["signature_move"],184),GREEN)
+        self.art.text(im,(112,312),f"No.{entry['species_id']:04d} · 9 种状态",GREEN)
+        self.button(im,(12,344,94,26),"导入",self.import_pet)
+        self.button(im,(113,344,94,26),"已使用" if self.box_candidate==self.selected_pet else "使用",self.use_pet,
+                    self.box_candidate==self.selected_pet)
+        self.button(im,(214,344,94,26),"导出示例",self.export_pet)
 
     def draw_panel(self):
         im=Image.new("RGBA",(self.W,self.H),RED)
@@ -265,40 +420,43 @@ class App:
         d.rectangle((3,3,316,398),outline=INK,width=2)
         d.rectangle((8,8,311,39),fill=INK)
         self.art.item(im,"poke-ball",9,8)
-        self.art.text(im,(42,13),"POKETASK / 巨金怪",PAPER)
+        self.art.text(im,(42,13),"POKETASK",PAPER)
         self.buttons=[]
         self.button(im,(265,12,36,19),"收起",self.hide_panel)
-        for i,(label,page,icon) in enumerate((("图鉴","status","poke-radar"),("队伍","agents","poke-ball"),("背包","settings","silph-scope"))):
-            self.button(im,(12+i*101,47,94,23),label,lambda p=page:self.change_page(p),self.page==page,icon=icon)
+        for i,(label,page,icon) in enumerate((("图鉴","status","poke-radar"),("队伍","agents","poke-ball"),("背包","settings","silph-scope"),("盒子","box","vs-recorder"))):
+            active=self.page==page or (page=="settings" and self.page in ("bridge","usage","animations"))
+            self.button(im,(12+i%2*152,47+i//2*34,144,28),label,lambda p=page:self.change_page(p),active,icon=icon)
         if self.page=="status":
             self.draw_status(im)
         elif self.page=="agents":
             self.draw_agents(im)
+        elif self.page=="box":
+            self.draw_box(im)
         else:
             self.draw_settings(im)
-        text=self.notice if time.monotonic()<self.notice_until else ("演示模式 · 不是真实会话" if self.demo else self.errors[0] if self.errors else "本地只读 · 单击桌宠展开 · 右键菜单")
-        self.art.text(im,(12,381),self.art.fit(text,296),INK)
+        text="处理中…" if self.pack_busy else self.notice if time.monotonic()<self.notice_until else self.box_error if self.page=="box" and self.box_error else (self.errors[0] if self.errors else "演示" if self.demo else "")
+        if text:
+            self.art.text(im,(12,381),self.art.fit(text,296),INK)
         self.photo=ImageTk.PhotoImage(im.convert("RGB").resize((self.W*self.scale,self.H*self.scale),Image.Resampling.NEAREST))
         self.canvas.itemconfigure(self.surface,image=self.photo)
 
     def draw_status(self,im):
         s=self.current()
         state=s.state if s else "disconnected"
-        name,color=STATES.get(state,STATES["unknown"])[0::2]
-        panel_box(im,(12,79,296,38))
-        provider=("CODEX" if s.provider=="codex" else "CLAUDE") if s else "AGENT"
-        self.art.item(im,"poke-radar",17,83)
-        self.art.text(im,(52,84),provider+" / "+(s.source if s else "未发现会话"))
-        self.art.text(im,(52,101),self.art.fit(s.name+" · "+s.id[:8] if s else "打开 agent 开始任务，或进入背包",246),GREEN)
+        name,color=STATES.get(state,STATES["unknown"])
         animation="idle" if s and state=="completed" and not self.demo and time.time()-s.updated_at>4 else state
-        self.art.scene(im,(14,126,292,104),animation,self.animation_time(state))
+        self.draw_creature(im,(14,120,292,110),animation,self.animation_time(state))
         panel_box(im,(12,233,296,33))
-        ImageDraw.Draw(im).rectangle((20,242,25,247),fill=color)
-        self.art.text(im,(31,237),name+(" · 演示" if self.demo else ""))
+        detail=s.detail if s and not self.demo and state in ("failed","interrupted","unknown") else ""
+        if not detail and s:
+            detail=f"{s.provider.upper()} / {s.source} · {s.name}"
+        status_y=237 if detail else 244
+        ImageDraw.Draw(im).rectangle((20,status_y+5,25,status_y+10),fill=color)
+        self.art.text(im,(31,status_y),name+(" · 演示" if self.demo else ""))
         age=max(0,int(time.time()-s.updated_at)) if s else None
-        self.art.text(im,(190,237),f"{age//60}分钟前" if age is not None and age>=60 else ("刚刚更新" if s else "等待连接"),GREEN)
-        detail=(s.detail or STATES[state][1]) if s else "可自动发现 Claude Code / Codex 本地会话"
-        self.art.text(im,(20,251),self.art.fit(detail,278),"#657b77")
+        self.art.text(im,(190,status_y),f"{age//60}分钟前" if age is not None and age>=60 else ("刚刚更新" if s else "等待连接"),GREEN)
+        if detail:
+            self.art.text(im,(20,251),self.art.fit(detail,278),"#657b77")
         panel_box(im,(12,275,296,61))
         observed=max((q.observed_at for q in s.quota),default=0) if s else 0
         try:
@@ -317,23 +475,16 @@ class App:
                 d.rectangle((202,y+3,297,y+10),fill=INK)
                 d.rectangle((204,y+5,204+int(91*remaining/100),y+8),fill=GOLD if stale else GREEN)
         else:
-            self.art.text(im,(20,299),"未知 · 当前来源未提供账户限额")
-            self.art.text(im,(20,317),"在用量详情中打开官方用量页",GREEN)
+            self.art.text(im,(20,303),"未知 · 来源未提供额度")
         self.button(im,(12,345,145,25),"代币盒 / 用量",lambda:self.change_page("usage"),icon="coin-case")
         self.button(im,(164,345,144,25),"声音："+("开" if self.sound else "关"),self.toggle_sound,icon="poke-flute")
 
     def draw_agents(self,im):
-        panel_box(im,(12,80,296,41))
-        self.art.item(im,"poke-ball",15,83)
-        self.art.text(im,(49,86),f"精灵球队伍 · {len(self.sessions)} 个会话")
-        self.art.text(im,(49,104),"手动选择 · 历史会话可能已退出",GREEN)
         if not self.sessions:
-            self.art.text(im,(20,151),"尚未发现会话。")
-            self.art.text(im,(20,173),"先启动 Claude Code 或 Codex。")
-            self.art.text(im,(20,195),"WSL / 自定义目录：在背包中选择。")
+            self.art.text(im,(20,151),"暂无会话")
         self.offset=max(0,min(self.offset,max(0,len(self.sessions)-4)))
         for i,s in enumerate(self.sessions[self.offset:self.offset+4]):
-            y=130+i*49
+            y=124+i*49
             active=self.key(s)==self.selected
             box=(12,y,296,42)
             panel_box(im,box,MINT if active else PAPER)
@@ -354,12 +505,8 @@ class App:
             return self.draw_bridge(im)
         if self.page=="animations":
             return self.draw_animations(im)
-        panel_box(im,(12,80,296,39))
-        self.art.item(im,"silph-scope",16,83)
-        self.art.text(im,(49,85),"训练家背包")
-        self.art.text(im,(49,102),"使用道具，管理你的桌宠",GREEN)
         tiles=[("宝可梦之笛","声音："+("开" if self.sound else "关"),"poke-flute",self.toggle_sound),
-               ("金属膜","置顶："+("开" if self.topmost else "关"),"metal-coat",self.toggle_top),
+               ("气球","置顶："+("开" if self.topmost else "关"),"air-balloon",self.toggle_top),
                ("城镇地图","Codex 目录","town-map",lambda:self.choose_root("codex")),
                ("城镇地图","Claude 目录","town-map",lambda:self.choose_root("claude")),
                ("西尔佛检视镜","Claude 接入","silph-scope",lambda:self.change_page("bridge")),
@@ -372,12 +519,8 @@ class App:
         self.button(im,(164,342,144,28),"只显示桌宠",self.hide_panel,icon="poke-ball")
 
     def draw_animations(self,im):
-        panel_box(im,(12,80,296,40))
-        self.art.item(im,"vs-recorder",16,84)
-        self.art.text(im,(49,86),"对战记录器 / 动画预览")
-        self.art.text(im,(49,104),"选择动作后进入演示，不改真实状态",GREEN)
-        states=(("巡逻","idle"),("彗星拳","working"),("询问 ?","asking"),
-                ("举牌完成","completed"),("普通等待","waiting"),("中断 !","interrupted"),
+        states=(("空闲","idle"),(self.move_name,"working"),("询问 ?","asking"),
+                ("本轮完成","completed"),("普通等待","waiting"),("中断 !","interrupted"),
                 ("失败 !","failed"),("状态待确认","unknown"),("等待连接","disconnected"))
         for i,(label,state) in enumerate(states):
             x,y=12+(i%3)*101,132+(i//3)*64
@@ -401,8 +544,7 @@ class App:
         self.change_page("status")
 
     def draw_bridge(self,im):
-        panel_box(im,(12,80,296,249))
-        self.art.text(im,(22,91),"Claude 增强接入",GREEN)
+        panel_box(im,(12,120,296,209))
         lines=["可增加询问授权、失败与结束事件。",
                "状态栏有提供额度时才显示剩余值。",
                "点击安装会合并 Claude settings.json，",
@@ -413,7 +555,7 @@ class App:
                "安装后重开 Claude 会话。",
                "移除只撤销本应用加入的配置。"]
         for i,line in enumerate(lines):
-            self.art.text(im,(22,119+i*19),line)
+            self.art.text(im,(22,128+i*18),line)
         if time.monotonic()-self.bridge_health_at>3:
             from .bridge import apply_bridge
             observed=apply_bridge([],self.store/"bridge")
@@ -439,18 +581,16 @@ class App:
 
     def draw_usage(self,im):
         s=self.current()
-        panel_box(im,(12,80,296,249))
-        self.art.item(im,"coin-case",15,84)
-        self.art.text(im,(49,87),"代币盒 / 会话 TOKEN")
+        panel_box(im,(12,120,296,209))
         if s:
             rows=[("累计输入",number(s.input_tokens)),("其中缓存读取",number(s.cached_tokens)),
                   ("累计输出",number(s.output_tokens)),("累计总量",number(s.total_tokens)),
                   ("最近上下文占用",f"{s.context_percent:.1f}%" if s.context_percent is not None else "未知")]
             for i,(label,value) in enumerate(rows):
-                self.art.text(im,(22,123+i*23),label,GREEN)
-                self.art.text(im,(207,123+i*23),value)
-            self.art.text(im,(22,244),"统计范围："+("正在载入历史，暂不完整" if s.usage_partial else "本地可读取的本次会话"),GREEN)
-            self.art.text(im,(22,263),"缓存已计入输入；token 不是账户余额")
+                self.art.text(im,(22,135+i*23),label,GREEN)
+                self.art.text(im,(207,135+i*23),value)
+            if s.usage_partial:
+                self.art.text(im,(22,244),"历史载入中",GREEN)
             for i,q in enumerate(s.quota[:2]):
                 try:
                     reset=time.strftime("%m-%d %H:%M",time.localtime(q.resets_at)) if q.resets_at else "未知"
@@ -458,7 +598,7 @@ class App:
                     reset="未知"
                 self.art.text(im,(22,285+i*17),self.art.fit(q.label+" 重置："+reset,274))
         else:
-            self.art.text(im,(22,133),"请先在队伍中选择一个会话。")
+            self.art.text(im,(22,133),"未选择会话")
         self.button(im,(12,344,145,26),"官方用量页面",self.open_usage)
         self.button(im,(164,344,144,26),"返回图鉴",lambda:self.change_page("status"))
 
@@ -467,7 +607,7 @@ class App:
         s=self.current()
         state=s.state if s else "disconnected"
         animation="idle" if s and state=="completed" and not self.demo and time.time()-s.updated_at>4 else state
-        self.art.scene(im,(0,0,PET_WIDTH,PET_HEIGHT),animation,self.animation_time(state),
+        self.draw_creature(im,(0,0,PET_WIDTH,PET_HEIGHT),animation,self.animation_time(state),
                        transparent=True,bubble_state=state,demo=self.demo)
         self.pet_photo=ImageTk.PhotoImage(im.convert("RGB").resize((PET_WIDTH*self.scale,PET_HEIGHT*self.scale),Image.Resampling.NEAREST))
         self.pet_canvas.itemconfigure(self.pet_surface,image=self.pet_photo)
@@ -485,6 +625,8 @@ class App:
     def scroll(self,event):
         if self.page=="agents":
             self.shift(-1 if event.delta>0 else 1)
+        elif self.page=="box":
+            self.shift_box(-4 if event.delta>0 else 4)
 
     def shift(self,delta):
         self.offset=max(0,min(max(0,len(self.sessions)-4),self.offset+delta))
@@ -495,6 +637,24 @@ class App:
             if bx<=x<=bx+w and by<=y<=by+h:
                 action()
                 return
+
+    def panel_press(self,event):
+        if 8<=event.x/self.scale<257 and 8<=event.y/self.scale<=39:
+            self.panel_drag=(event.x_root,event.y_root,self.root.winfo_x(),self.root.winfo_y())
+        else:
+            self.click(event)
+
+    def panel_move(self,event):
+        if self.panel_drag:
+            x,y,px,py=self.panel_drag
+            nx=max(0,min(self.root.winfo_screenwidth()-self.W*self.scale,px+event.x_root-x))
+            ny=max(0,min(self.root.winfo_screenheight()-self.H*self.scale,py+event.y_root-y))
+            self.root.geometry(f"+{nx}+{ny}")
+
+    def panel_release(self,event):
+        if self.panel_drag:
+            self.panel_drag=None
+            self.save()
 
     def focus_next(self,event):
         self.focused=(self.focused+1)%max(1,len(self.buttons))
@@ -524,7 +684,7 @@ class App:
 
     def menu(self,event):
         menu=tk.Menu(self.pet,tearoff=False)
-        menu.add_command(label="打开巨金怪图鉴",command=self.show_panel)
+        menu.add_command(label="打开图鉴",command=self.show_panel)
         menu.add_command(label="声音："+("开" if self.sound else "关"),command=self.toggle_sound)
         menu.add_command(label="退出 PokeTask",command=self.quit)
         menu.tk_popup(event.x_root,event.y_root)
@@ -533,6 +693,7 @@ class App:
         self.panel_visible=True
         self.root.deiconify()
         self.root.lift()
+        self.root.focus_force()
 
     def hide_panel(self):
         self.panel_visible=False
@@ -584,7 +745,9 @@ class App:
             "Codex 额度来自日志中最近一次上报，15 分钟后或过重置时间标旧；"
             "Claude 可在背包安装增强接入；只有状态栏实际提供额度时可显示，否则请打开官方用量页。\n\n"
             "不读取凭据、不上传对话。演示模式的数值是示例。\n"
-            "点击桌宠展开，拖动移动，右键退出；Tab/Enter 操作面板。\n\n"
+            "点击桌宠展开，拖动移动，右键退出；Tab/Enter 操作面板。\n"
+            "拖动顶部 POKETASK 移动菜单；收起或 Esc 隐藏。\n"
+            "盒子可导入 ZIP 形象包、选择外观、导出巨金怪示例。\n\n"
             "询问状态的头顶气泡使用未知图腾 ?；失败/中断使用未知图腾 !。\n"
             "巨金怪与未知图腾使用原版像素图；彗星拳挥臂、星芒、举牌与气泡为本项目编排。"
             "道具仅用于菜单功能；字体：Fusion Pixel / OFL。",parent=self.root)
@@ -596,13 +759,14 @@ class App:
         self.photo._PhotoImage__photo.write(str(target/"panel.png"),format="png")
         self.pet_photo._PhotoImage__photo.write(str(target/"pet.png"),format="png")
         original_page=self.page
-        for page in ("usage","agents","settings","bridge","animations"):
+        for page in ("usage","agents","settings","bridge","animations","box"):
             self.page=page
             self.draw_panel()
             self.photo._PhotoImage__photo.write(str(target/(page+".png")),format="png")
         self.page=original_page
         (target/"result.json").write_text(json.dumps({"ok":True,"sessions":len(self.sessions),
             "font":bool(self.art.font),"front_frames":len(self.art.frames["metagross"]),
+            "selected_pet":self.selected_pet,"frameless":bool(self.root.overrideredirect()),
             "errors":self.errors,"observations":[{"provider":s.provider,"source":s.source,
                 "state":s.state,"total_tokens":s.total_tokens,"quota_windows":len(s.quota)}
                 for s in self.sessions]},ensure_ascii=False),encoding="utf-8")
@@ -618,7 +782,7 @@ class App:
 
 
 def main():
-    parser=argparse.ArgumentParser(description="PokeTask · 巨金怪桌宠")
+    parser=argparse.ArgumentParser(description="PokeTask · 宝可梦桌宠")
     parser.add_argument("--demo",action="store_true")
     parser.add_argument("--smoke-test",metavar="OUTPUT_DIR")
     args=parser.parse_args()

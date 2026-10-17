@@ -1,5 +1,6 @@
 """Exercise the portable exe without project cwd, Python PATH, or real agents."""
 import json
+import argparse
 import ctypes
 import hashlib
 import os
@@ -13,10 +14,15 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def main():
-    destination=ROOT/".local/release-smoke"
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--exe",type=Path,default=ROOT/"release/PokeTaskStatus.exe")
+    parser.add_argument("--pet-pack",type=Path)
+    options=parser.parse_args()
+    source=options.exe.resolve()
+    destination=ROOT/".local"/("release-smoke-"+str(time.time_ns()))
     destination.mkdir(parents=True,exist_ok=True)
     exe=destination/"PokeTaskStatus.exe"
-    shutil.copy2(ROOT/"release/PokeTaskStatus.exe",exe)
+    shutil.copy2(source,exe)
     fixture=destination/"codex/sessions"
     fixture.mkdir(parents=True,exist_ok=True)
     now=time.time()
@@ -35,8 +41,23 @@ def main():
     assert result["sessions"]==1,result
     assert result["observations"][0]["total_tokens"]==1280,result
     assert result["observations"][0]["quota_windows"]==1,result
-    for name in ("panel","pet","usage","agents","settings","bridge","animations"):
+    assert result["frameless"] and result["selected_pet"]=="builtin-metagross",result
+    for name in ("panel","pet","usage","agents","settings","bridge","animations","box"):
         assert (output/(name+".png")).is_file(),name
+    pack_output=None
+    if options.pet_pack:
+        sys.path.insert(0,str(ROOT/"src"))
+        from poketask.petpacks import import_pack
+        pack=import_pack(options.pet_pack.resolve(),destination/"data/pets")
+        settings=destination/"data/settings.json"
+        config=json.loads(settings.read_text(encoding="utf-8"))
+        config["selected_pet"]=pack.id
+        settings.write_text(json.dumps(config),encoding="utf-8")
+        pack_output=destination/("imported-"+str(time.time_ns()))
+        subprocess.run([str(exe),"--smoke-test",str(pack_output)],cwd=destination,env=environment,timeout=45,check=True)
+        restored=json.loads((pack_output/"result.json").read_text(encoding="utf-8"))
+        assert restored["ok"] and restored["selected_pet"]==pack.id and restored["frameless"],restored
+        assert restored["observations"][0]["total_tokens"]==1280,restored
     # Verify the new input-request state in the packaged watcher and renderer.
     request={"type":"response_item","timestamp":time.time(),"payload":{
         "type":"function_call","name":"request_user_input","call_id":"portable-question",
@@ -79,6 +100,7 @@ def main():
     print(json.dumps({"portable_smoke":"passed","python_path":"removed","working_directory":"isolated",
                       "single_instance":"passed","sha256":hashlib.sha256(exe.read_bytes()).hexdigest(),
                       "bytes":exe.stat().st_size,"result":result,"artifacts":str(output),
+                      "imported_pack":"passed" if pack_output else "not requested","pack_artifacts":str(pack_output) if pack_output else None,
                       "asking_state":"passed","asking_artifacts":str(asking_output)},ensure_ascii=True))
 
 

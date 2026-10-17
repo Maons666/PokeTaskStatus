@@ -17,15 +17,15 @@ METEOR_TIMING = {
 }
 METEOR_DURATION = METEOR_TIMING["rest"][1]
 STATES = {
-    "idle": ("空闲", "巡逻中，随时待命", GREEN),
-    "working": ("任务中", "巨金怪正在练习彗星拳", "#609da8"),
-    "asking": ("询问状态", "需要你授权、选择或回答，请查看 agent", GOLD),
-    "completed": ("本轮完成", "训练结束，巨金怪举牌报到！", GREEN),
-    "waiting": ("等待中", "暂时等待，尚无需要你决定的请求", GOLD),
-    "failed": ("任务失败", "技能失误了，请检查 agent 的报错", RED),
-    "interrupted": ("已中断", "训练中断，等待下一步指令", GOLD),
-    "disconnected": ("未连接", "等待发现本地 agent 会话", "#73878b"),
-    "unknown": ("状态待确认", "暂时没有新的可靠状态", "#73878b"),
+    "idle": ("空闲", GREEN),
+    "working": ("任务中", "#609da8"),
+    "asking": ("询问状态", GOLD),
+    "completed": ("本轮完成", GREEN),
+    "waiting": ("等待中", GOLD),
+    "failed": ("任务失败", RED),
+    "interrupted": ("已中断", GOLD),
+    "disconnected": ("未连接", "#73878b"),
+    "unknown": ("状态待确认", "#73878b"),
 }
 
 
@@ -43,7 +43,7 @@ class PixelArt:
             with Image.open(directory / (name + ".gif")) as image:
                 self.frames[name] = [f.convert("RGBA").copy() for f in ImageSequence.Iterator(image)]
         self.items = {}
-        for name in ("poke-ball", "potion", "rare-candy", "metal-coat", "poke-flute",
+        for name in ("poke-ball", "potion", "rare-candy", "air-balloon", "poke-flute",
                      "coin-case", "poke-radar", "town-map", "vs-recorder", "silph-scope", "escape-rope"):
             with Image.open(directory / (name + ".png")) as source:
                 self.items[name] = source.convert("RGBA")
@@ -303,6 +303,31 @@ class PixelArt:
         else:
             self.text(image,(left+(width-int(self.font.getlength(first)))//2,top+7),first)
             if second: self.text(image,(left+(width-int(self.font.getlength(second)))//2,top+24),second,GREEN)
+
+    def pack_scene(self,image,box,pack,state,seconds,transparent=False,bubble_state=None,demo=False):
+        """Render a fixed pack canvas so changing frame bounds never cause jitter."""
+        x,y,w,h=box
+        if not transparent:
+            d=ImageDraw.Draw(image)
+            d.rectangle((x,y,x+w,y+h),fill="#d5e0c6")
+            for gx in range(x+4,x+w,12):
+                d.line((gx,y+h-10,gx+4,y+h-10),fill="#a5bbaa")
+            self.text(image,(x+8,y+5),f"No.{pack.species_id:04d}","#739186")
+        frames=pack.animations[state]
+        durations=pack.durations[state]
+        elapsed=int(seconds*1000)%sum(durations)
+        index=0
+        while index<len(durations)-1 and elapsed>=durations[index]:
+            elapsed-=durations[index]
+            index+=1
+        frame=frames[index]
+        available_h=h-(70 if transparent else 6)
+        factor=min(1,(w-16)/frame.width,available_h/frame.height)
+        if factor<1:
+            frame=frame.resize((max(1,int(frame.width*factor)),max(1,int(frame.height*factor))),Image.Resampling.NEAREST)
+        image.alpha_composite(frame,(x+(w-frame.width)//2,y+h-6-frame.height))
+        if transparent:
+            self.speech(image,x+w//2,y+h-76,bubble_state or state,seconds,demo)
 
     def scene(self,image,box,state,seconds,transparent=False,bubble_state=None,demo=False):
         x,y,w,h=box

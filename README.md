@@ -1,14 +1,15 @@
 # PokeTask Status
 
-Windows 上的巨金怪桌宠。用《宝可梦 黑／白》的原版巨金怪像素帧，配合自行编排的彗星拳、巡逻和举牌动作，显示桌面 agent 的状态。
+Windows 上的宝可梦桌宠，默认使用巨金怪。用《宝可梦 黑／白》的原版像素帧，配合自行编排的彗星拳、巡逻和举牌动作，显示桌面 agent 的状态；也可以导入完整形象包。
 
 ## 使用
 
-双击本机构建的 `release/PokeTaskStatus.exe` 即可运行，无需安装 Python。首次启动打开图鉴，此后只显示桌宠。单击桌宠打开面板，拖动移动，右键退出。关闭图鉴窗口只收起面板；背包中的“离洞绳”会完全退出。
+双击本机构建的 `release/PokeTaskStatus.exe` 即可运行，无需安装 Python。首次启动打开图鉴，此后只显示桌宠。单击桌宠打开面板，拖动移动，右键退出。菜单无系统标题栏，拖动顶部 POKETASK 区域移动窗口；“收起”或 Esc 隐藏面板，背包中的“离洞绳”完全退出。四个入口按 2×2 排列，页面内没有重复标题条。
 
 - **图鉴**：当前会话状态、最近上报的账户额度、声音开关和用量详情。
-- **队伍**：手动选择一个 Claude Code 或 Codex 会话；一次只展示一只巨金怪。滚轮或翻页按钮查看历史会话。
-- **背包**：使用原版游戏道具制作菜单按钮。宝可梦之笛管理声音，金属膜切换置顶，城镇地图选择日志目录，代币盒查看用量，对战记录器预览动作。预览有明确的“演示”标记，可以返回真实状态。
+- **队伍**：手动选择一个 Claude Code 或 Codex 会话；一次只展示一只宝可梦。滚轮或翻页按钮查看历史会话。
+- **背包**：使用原版游戏道具制作菜单按钮。宝可梦之笛管理声音，气球切换置顶，城镇地图选择日志目录，代币盒查看用量，对战记录器预览动作。预览有明确的“演示”标记，可以返回真实状态。
+- **盒子**：导入 ZIP 形象包，点选后按“使用”切换外观，重启自动恢复。包内需有头像、九种状态动画、代表招式和来源说明。切换外观不切换 agent 或用量。内置巨金怪始终保留，“导出示例”可以得到它的完整动画包，格式见 [PET_PACKS.md](docs/PET_PACKS.md)。目前随附角色只有巨金怪。
 - **悬浮桌宠**：头顶像素文字气泡显示状态。工作时用 `.` 到 `......` 循环，巨金怪蓄力并挥出彗星拳，完成时举牌；询问时气泡出现未知图腾 `?`，失败或中断时出现未知图腾 `!`。
 - 支持 `Tab` / `Enter` 操作面板，`Esc` 收起，`F1` 打开说明。
 
@@ -56,13 +57,13 @@ python scripts/smoke_release.py
 
 演示：`python run.py --demo`。自动 GUI 冒烟：`python run.py --demo --smoke-test .local/preview`，输出仅应用面板图片并自动退出。
 
-`python scripts/smoke_ui.py --meteor-sweep` 用隔离数据执行自动界面流程（挥拳固定阶段、九种状态及气泡、六个菜单页面、键盘开关、会话切换、设置保存、收起展开、拖动边界）；`smoke_release.py` 将 EXE 复制到独立目录、清除 Python PATH 后验证运行和合成数据。`python scripts/preview_animation.py --output .local/meteor-power-preview` 生成彗星拳 GIF、动作分镜和状态预览。它们属于自动 QA，不能代替真人使用和真实插件端到端验收。
+`python scripts/smoke_ui.py --meteor-sweep` 用隔离数据执行自动界面流程（挥拳固定阶段、九种状态及气泡、七个菜单页面、键盘开关、会话切换、设置保存、收起展开、无边框窗口拖动）；先运行 `python scripts/export_pet.py`，再为 GUI 脚本加 `--pet-pack release/metagross.pokepet.zip` 可验证完整包导入与切换。`smoke_release.py` 将 EXE 复制到独立目录、清除 Python PATH 后验证运行和合成数据；也支持同一 `--pet-pack` 参数，检查打包程序恢复导入形象。`python scripts/preview_animation.py --output .local/meteor-power-preview` 生成彗星拳 GIF、动作分镜和状态预览。它们属于自动 QA，不能代替真人使用和真实插件端到端验收。
 
 ## 仓库与本地文件
 
 - 上传 GitHub：`src/`、`tests/`、`scripts/`、`assets/manifest.json`、依赖文件、本文档和素材声明。
 - 不上传：`.local/`（三轮报告、截图、测试数据、构建缓存）、`release/`、`build/`、`dist/`、`assets/vendor/`（下载的游戏图与字体）、虚拟环境、日志及私有设置。均已加入 `.gitignore`。
-- 运行设置保存在 `%LOCALAPPDATA%\PokeTaskStatus`，开发/测试可通过 `POKETASK_DATA_DIR` 改到隔离目录。
+- 运行设置保存在 `%LOCALAPPDATA%\PokeTaskStatus`，形象包在该目录的 `pets/` 中；开发/测试可通过 `POKETASK_DATA_DIR` 改到隔离目录。
 
 此目录未自动发布到 GitHub。构建产物可以另行作为 Release 附件分发；素材权利不随源码转移，详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 

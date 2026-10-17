@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "poketask-status"
-version = "0.2.2"
-description = "A local-first Metagross desktop companion for coding agents"
+version = "0.3.0"
+description = "A local-first pixel Pokemon desktop companion for coding agents"
 requires-python = ">=3.11"
 dependencies = ["Pillow==12.3.0"]
 
