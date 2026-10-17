@@ -1,0 +1,25 @@
+# Local reports, screenshots, recordings, test workspaces and private data
+.local/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+release/
+*.spec
+*.log
+.env
+.env.*
+!.env.example
+.claude/
+.codex/
+.agents/
+# Downloaded third-party game artwork and font binaries: fetch from manifest
+assets/vendor/
+*.zip
+*.exe
+*.pdb
+*.egg-info/
