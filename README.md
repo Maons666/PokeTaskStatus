@@ -2,9 +2,17 @@
 
 Windows 上的宝可梦桌宠，默认使用巨金怪。用《宝可梦 黑／白》的原版像素帧，配合自行编排的彗星拳、巡逻和举牌动作，显示桌面 agent 的状态；也可以导入完整形象包。
 
+## 下载与运行
+
+1. 打开本仓库的 [Releases 页面](https://github.com/Maons666/PokeTaskStatus/releases)，在所需版本的 **Assets** 中下载 `PokeTaskStatus.exe`。
+2. 将 EXE 放在一个固定文件夹中，双击运行，无需安装 Python，也不需要创建名为 `release` 的文件夹。
+3. 可选下载 `metagross.pokepet.zip`，在应用的「盒子 → 导入」中选中它，再点「使用」。应用已经内置巨金怪，正常使用无需下载此示例包。
+
+GitHub 自动提供的 **Source code (zip)** / **Source code (tar.gz)** 是源码压缩包，不包含已构建的应用。如果 Assets 中没有 `PokeTaskStatus.exe`，该版本尚未附上成品，可按下文从源码构建。本项目的 `release/` 仅是本地构建输出目录，已被 Git 忽略，因此 GitHub 源码文件列表里没有它。关于源码归档与发布附件，参见 [GitHub Releases 说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)。
+
 ## 使用
 
-双击本机构建的 `release/PokeTaskStatus.exe` 即可运行，无需安装 Python。首次启动打开图鉴，此后只显示桌宠。单击桌宠打开面板，拖动移动，右键退出。菜单无系统标题栏，拖动顶部 POKETASK 区域移动窗口；“收起”或 Esc 隐藏面板，背包中的“离洞绳”完全退出。四个入口按 2×2 排列，页面内没有重复标题条。
+首次启动打开图鉴，此后只显示桌宠。单击桌宠打开面板，拖动移动，右键退出。菜单无系统标题栏，拖动顶部 POKETASK 区域移动窗口；“收起”或 Esc 隐藏面板，背包中的“离洞绳”完全退出。四个入口按 2×2 排列，页面内没有重复标题条。
 
 - **图鉴**：当前会话状态、最近上报的账户额度、声音开关和用量详情。
 - **队伍**：手动选择一个 Claude Code 或 Codex 会话；一次只展示一只宝可梦。滚轮或翻页按钮查看历史会话。
@@ -42,16 +50,24 @@ Windows 上的宝可梦桌宠，默认使用巨金怪。用《宝可梦 黑／�
 
 ## 从源码运行和构建
 
-Windows，Python 3.11 或更新版本（含 Tk）。
+Windows，Python 3.11 或更新版本（含 Tk）。在项目根目录安装依赖并运行：
 
 ```powershell
 python -m pip install -r requirements-build.txt
 python scripts/fetch_assets.py
 python run.py
+```
+
+构建并验证可分发文件：
+
+```powershell
 python scripts/check.py
 python scripts/build.py
-python scripts/smoke_release.py
+python scripts/export_pet.py
+python scripts/smoke_release.py --pet-pack release/metagross.pokepet.zip
 ```
+
+上述构建命令会在本地创建 `release/`，生成 `PokeTaskStatus.exe` 和完整示例包 `metagross.pokepet.zip`。这个目录不需要提交到 Git；发布时将里面的文件上传为 Release 附件。
 
 素材下载只发生在构建准备时；已打包的应用可离线启动。巨金怪形象来自原版正面／背面 GIF。彗星拳将画面右侧的原版前肢像素分离，抬至右上，延长持拳蓄力并轻微晃动，再带着粒子快速横扫到左侧。挥拳只保留一道手臂残影和短弧光迹，左侧命中时短暂停顿再收势。3.8 秒循环中的举拳蓄力为 1.12 秒，挥拳为 0.16 秒；工作动画约 30 帧／秒。前肢使用最近邻旋转与伸展，被遮挡的后腿由原版肢体及爪部像素、原图调色板重构，独立放在身体和前拳后面，前拳移开后仍可见。衔接关节、粒子、牌子和气泡由程序绘制。询问／中断符号使用原版未知图腾精灵，道具图只用于菜单，不参与攻击表现。不使用生成式美术。通知音为程序生成的短音，不是游戏音频。
 
@@ -59,13 +75,37 @@ python scripts/smoke_release.py
 
 `python scripts/smoke_ui.py --meteor-sweep` 用隔离数据执行自动界面流程（挥拳固定阶段、九种状态及气泡、七个菜单页面、键盘开关、会话切换、设置保存、收起展开、无边框窗口拖动）；先运行 `python scripts/export_pet.py`，再为 GUI 脚本加 `--pet-pack release/metagross.pokepet.zip` 可验证完整包导入与切换。`smoke_release.py` 将 EXE 复制到独立目录、清除 Python PATH 后验证运行和合成数据；也支持同一 `--pet-pack` 参数，检查打包程序恢复导入形象。`python scripts/preview_animation.py --output .local/meteor-power-preview` 生成彗星拳 GIF、动作分镜和状态预览。它们属于自动 QA，不能代替真人使用和真实插件端到端验收。
 
+## 在 GitHub 发布 Release
+
+以下步骤供维护者发布 Windows 成品，网页操作依据 [GitHub 官方发布指南](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
+
+1. 确认 `pyproject.toml` 和 `src/poketask/__init__.py` 的版本号一致，将本次源码及 README 提交并推送到 GitHub。用这份源码执行上面的构建与验证命令，保证附件对应待发布的代码版本。
+2. 打开 [Releases](https://github.com/Maons666/PokeTaskStatus/releases)，点击 **Draft a new release**（首次发布时可能显示 **Create a new release**）。
+3. 在 **Choose a tag** 中选择或新建本次版本标签，例如 `v0.3.0`。新建标签时，**Target** 选择包含已验证源码的分支（本仓库通常是 `main`）；标签版本应与源码版本一致，后续更新使用新的版本号。
+4. 填写标题，例如 `PokeTask Status v0.3.0`，并描述新增功能、修复和使用方法。
+5. 在附件上传区域选中本地 `release/PokeTaskStatus.exe`，以及可选的 `release/metagross.pokepet.zip`。上传的是这两个文件，无需上传整个 `release/` 文件夹；`.local/` 中的报告、日志和截图不作为附件上传。
+6. 等所有附件上传完成后检查文件名，再点击 **Publish release**；需要稍后发布则点 **Save draft**。测试版本可勾选 **This is a pre-release**。
+7. 发布后展开 **Assets**，确认能下载 EXE 和已附上的示例包，并试运行下载的 EXE。仅有两个 **Source code** 下载项，说明成品附件还没有上传。
+
+发布说明可写成：
+
+```text
+新增盒子：导入完整宝可梦形象包，切换外观并记住选择。
+菜单改为四格布局，移除系统窗口条和重复页面标题。
+默认内置巨金怪，含彗星拳及九种状态表现。
+
+Windows 用户下载 Assets 中的 PokeTaskStatus.exe，双击运行。
+metagross.pokepet.zip 为可选的完整形象示例，可在盒子中导入。
+```
+
 ## 仓库与本地文件
 
-- 上传 GitHub：`src/`、`tests/`、`scripts/`、`assets/manifest.json`、依赖文件、本文档和素材声明。
-- 不上传：`.local/`（三轮报告、截图、测试数据、构建缓存）、`release/`、`build/`、`dist/`、`assets/vendor/`（下载的游戏图与字体）、虚拟环境、日志及私有设置。均已加入 `.gitignore`。
+- 提交到 GitHub 源码仓库：`src/`、`tests/`、`scripts/`、`docs/`、`run.py`、`assets/manifest.json`、`assets/claude-bridge.ps1`、依赖文件、本文档和素材声明。
+- 不提交到源码仓库：`.local/`（三轮报告、截图、测试数据、构建缓存）、`release/`、`build/`、`dist/`、`assets/vendor/`（下载的游戏图与字体）、虚拟环境、日志及私有设置。均已加入 `.gitignore`。
+- 单独上传为 GitHub Release 附件：本地构建的 `PokeTaskStatus.exe`，以及可选的 `metagross.pokepet.zip`。Git 忽略规则不影响在发布页面手动上传附件。
 - 运行设置保存在 `%LOCALAPPDATA%\PokeTaskStatus`，形象包在该目录的 `pets/` 中；开发/测试可通过 `POKETASK_DATA_DIR` 改到隔离目录。
 
-此目录未自动发布到 GitHub。构建产物可以另行作为 Release 附件分发；素材权利不随源码转移，详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+构建脚本只生成本地文件，发布需要按上述步骤操作。素材权利不随源码转移，详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 ## 接入参考
 
